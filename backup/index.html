@@ -371,17 +371,10 @@ function favList(it){const out=[];const F=it.favs||{};
   return out.sort((a,b)=>a.f.localeCompare(b.f))}
 try{speechSynthesis.getVoices();speechSynthesis.onvoiceschanged=()=>{}}catch(e){}
 
-/* ---------- 자동 전체화면 ---------- */
-let autoFS=LS.get('autoFS',true);
-function wantFS(){if(!autoFS||document.fullscreenElement||!document.documentElement.requestFullscreen)return;
-  try{const p=document.documentElement.requestFullscreen({navigationUI:'hide'});p&&p.catch&&p.catch(()=>{})}catch(e){}}
-wantFS();
-document.addEventListener('pointerdown',e=>{if(e.target.closest('#bFull'))return;wantFS()},true);
-document.addEventListener('keydown',e=>{if(e.key!=='Escape')wantFS()},true);
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')wantFS()});
+/* ---------- 전체화면: ⛶ 누를 때만 (자동 없음) ---------- */
 $('#bFull').onclick=async()=>{
-  try{if(!document.fullscreenElement){autoFS=true;LS.set('autoFS',true);await document.documentElement.requestFullscreen({navigationUI:'hide'})}
-      else{autoFS=false;LS.set('autoFS',false);await document.exitFullscreen();toast('자동 전체화면 꺼짐 · ⛶로 다시 켜기')}}
+  try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen({navigationUI:'hide'});
+      else await document.exitFullscreen()}
   catch(e){toast('이 화면에서는 전체화면이 막혀 있어요')}};
 document.addEventListener('fullscreenchange',()=>$('#bFull').classList.toggle('on',!!document.fullscreenElement));
 
