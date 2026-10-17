@@ -67,6 +67,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .search{margin-block:2px 6px}
 .search input{width:100%;height:36px;border:1px solid var(--line);border-radius:9px;padding:0 10px;background:var(--panel);color:var(--ink);font:inherit}
 .sres{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+.sxrow{display:flex;gap:5px;align-items:center}.sxrow input{flex:1;min-width:0}.sxrow .sxai{height:36px;border-radius:9px}
+.sxsep{font-weight:700;margin-top:4px}
 
 /* 넘김 무대 */
 #stage{touch-action:pan-y}
@@ -232,7 +234,7 @@ textarea{min-height:52px;resize:vertical}
   <button class="ib" id="bFull" aria-label="전체화면">⛶</button>
 </div>
 <div class="search" id="ioBox" hidden><textarea id="ioTxt" placeholder="다른 기기에서 「📤 데이터 복사」한 내용을 붙여넣으세요"></textarea><div style="display:flex;gap:6px;margin-top:4px"><button class="mini ok" id="ioGo">가져오기 (합치기)</button><button class="mini" id="ioX">닫기</button></div></div>
-<div class="search" id="searchBox" hidden><input id="q" type="search" placeholder="단어·문장·표현으로 찾기"><div class="sres" id="sres"></div></div>
+<div class="search" id="searchBox" hidden><div class="sxrow"><input id="q" type="search" placeholder="단어·문장·표현으로 찾기 (띄어쓰기·오타·초성 OK)"><button class="sxai" id="sxAi" type="button" aria-label="뜻 검색" title="뜻이 비슷한 것까지 AI로 찾기">🔍✨</button></div><div id="sxRecent"></div><div class="sres" id="sres"></div></div>
 
 <details class="quiz" id="quiz"><summary>🃏 카드 복습 · 3지선다 <span id="qzN"></span></summary><div id="qzBody"></div></details>
 <div id="stage">
@@ -266,6 +268,82 @@ textarea{min-height:52px;resize:vertical}
 </div>
 <div class="toast" id="toast" hidden></div>
 
+<script>
+/* SX 공통 검색 v1 — 띄어쓰기·기호 무시, 오타 허용(한글 자모), 초성, 노란 표시+3초 번쩍, 최근 검색어 결과 수, AI 뜻 검색 */
+(function(){if(window.SX)return;
+const STRIP=/[\s.,·・!?'"“”‘’()\[\]{}<>~\-_\/\\:;|…「」『』#@*+=→←↑↓]/;
+const STRIPG=new RegExp(STRIP.source,'g');
+const CHO='ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const nrm=s=>String(s||'').toLowerCase().replace(STRIPG,'');
+const jamo=s=>{let o='';for(const ch of s){const c=ch.charCodeAt(0)-44032;if(c>=0&&c<11172){o+=String.fromCharCode(4352+(c/588|0),4449+((c%588)/28|0));const t=c%28;if(t)o+=String.fromCharCode(4519+t)}else o+=ch}return o};
+const choOf=ch=>{const c=ch.charCodeAt(0)-44032;return c>=0&&c<11172?CHO[c/588|0]:ch};
+const isCho=q=>{const n=nrm(q);return n.length>=2&&[...n].every(c=>CHO.includes(c))};
+const maxOf=L=>L<4?-1:L<7?1:L<12?2:3;
+/* 부분 문자열과의 최소 편집거리(Sellers). 맞으면 [시작,끝) 반환 */
+function near(q,h,max){const L=q.length;let p=new Array(L+1),c=new Array(L+1),ps=new Array(L+1),cs=new Array(L+1);for(let j=0;j<=L;j++){p[j]=j;ps[j]=0}
+  let best=null;for(let i=0;i<h.length;i++){c[0]=0;cs[0]=i+1;const hc=h[i];
+    for(let j=1;j<=L;j++){const a=p[j]+1,b=c[j-1]+1,d=p[j-1]+(q[j-1]===hc?0:1);if(d<=a&&d<=b){c[j]=d;cs[j]=ps[j-1]}else if(a<=b){c[j]=a;cs[j]=ps[j]}else{c[j]=b;cs[j]=cs[j-1]}}
+    if(c[L]<=max&&(!best||c[L]<best.d)){best={d:c[L],s:cs[L],e:i+1};if(c[L]===0)break}
+    let t=p;p=c;c=t;t=ps;ps=cs;cs=t}return best}
+/* 4 그대로 · 3 띄어쓰기 무시 · 2.5 초성 · 2 단어 모두 · 1 오타 허용 · 0 없음 */
+function score(q,hay){const qs=String(q||'').trim().toLowerCase();if(!qs)return 4;const hl=String(hay||'').toLowerCase();if(hl.includes(qs))return 4;
+  const hn=nrm(hl),qn=nrm(qs);if(!qn)return 0;if(hn.includes(qn))return 3;
+  if(isCho(qs)){let ch='';for(const x of hn)ch+=choOf(x);if(ch.includes(qn))return 2.5}
+  const ws=qs.split(/\s+/).map(nrm).filter(Boolean);if(ws.length>1&&ws.every(w=>hn.includes(w)))return 2;
+  const qj=jamo(qn),mx=maxOf(qj.length);if(mx<0)return 0;return near(qj,jamo(hn),mx)?1:0}
+/* 화면에서 찾은 부분 표시 */
+let css=false;function addCss(){if(css)return;css=true;const s=document.createElement('style');s.textContent=
+ 'mark.sxm{background:#ffe066;color:#111;border-radius:2px;padding:0 1px}mark.sxm.sxf{animation:sxf .5s ease-in-out 6}@keyframes sxf{0%,100%{background:#ffe066;box-shadow:0 0 0 0 #ffb300}50%{background:#ff9f1c;box-shadow:0 0 0 3px #ffb30088}}@media (prefers-reduced-motion:reduce){mark.sxm.sxf{animation:none}}'
+ +'.sxr{display:flex;flex-wrap:wrap;gap:4px;margin:3px 0}.sxr button{font:inherit;font-size:11px;line-height:1.2;border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:999px;padding:2px 8px;cursor:pointer}.sxr button b{font-weight:600;opacity:.6;margin-left:3px;font-size:10px}'
+ +'.sxai{font:inherit;font-size:12px;border:1px solid rgba(128,128,128,.4);background:transparent;color:inherit;border-radius:8px;padding:2px 7px;cursor:pointer;white-space:nowrap}.sxai[disabled]{opacity:.5}'
+ +'.sxpop{position:fixed;z-index:99999;display:flex;gap:4px;padding:5px;border-radius:10px;background:#222;color:#fff;box-shadow:0 6px 18px #0005}.sxpop button,.sxpop input{font:inherit;font-size:12px;border:0;border-radius:6px;padding:4px 8px}.sxpop button{background:#444;color:#fff;cursor:pointer}.sxpop input{width:9em}'
+ +'.sxbadge{display:inline-block;font-size:10px;padding:0 5px;border-radius:5px;background:#ffe066;color:#111;margin-left:4px;vertical-align:1px}';document.head.appendChild(s)}
+function ranges(text,q){const t=String(text),qs=String(q||'').trim().toLowerCase();if(!qs)return[];const out=[];const tl=t.toLowerCase();
+  let k=tl.indexOf(qs);while(k>=0&&out.length<20){out.push([k,k+qs.length]);k=tl.indexOf(qs,k+qs.length)}if(out.length)return out;
+  const map=[];let ns='';for(let i=0;i<t.length;i++){const ch=t[i];if(!STRIP.test(ch)){map.push(i);ns+=ch.toLowerCase()}}
+  const qn=nrm(qs);if(!qn)return out;const find=(hs,nd)=>{let a=hs.indexOf(nd);while(a>=0&&out.length<20){out.push([map[a],map[a+nd.length-1]+1]);a=hs.indexOf(nd,a+nd.length)}};
+  find(ns,qn);if(out.length)return out;
+  if(isCho(qs)){let ch='';for(const x of ns)ch+=choOf(x);find(ch,qn);if(out.length)return out}
+  const ws=qs.split(/\s+/).map(nrm).filter(w=>w.length>=1);if(ws.length>1){ws.forEach(w=>find(ns,w));if(out.length)return out.sort((a,b)=>a[0]-b[0])}
+  const qj=jamo(qn),mx=maxOf(qj.length);if(mx<0)return out;let js='',jm=[];for(let i=0;i<ns.length;i++){const j=jamo(ns[i]);for(let z=0;z<j.length;z++)jm.push(i);js+=j}
+  const b=near(qj,js,mx);if(b&&b.e>b.s)out.push([map[jm[b.s]],map[jm[b.e-1]]+1]);return out}
+function unmark(root){(root||document).querySelectorAll('mark.sxm').forEach(m=>{const p=m.parentNode;if(!p)return;p.replaceChild(document.createTextNode(m.textContent),m);p.normalize()})}
+function mark(root,q,opt){addCss();if(!root)return 0;unmark(root);q=String(q||'').trim();if(!q)return 0;opt=opt||{};let n=0;
+  const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,{acceptNode:x=>{const p=x.parentNode;if(!p||!x.nodeValue.trim()||x.nodeValue.length>6000)return 2;if(p.closest&&p.closest('script,style,textarea,input,select,mark,.sxr,.sxnomark'+(opt.skip?','+opt.skip:'')))return 2;return 1}});
+  const nodes=[];while(w.nextNode())nodes.push(w.currentNode);
+  nodes.forEach(tn=>{const r=ranges(tn.nodeValue,q);if(!r.length)return;const t=tn.nodeValue,f=document.createDocumentFragment();let pos=0;
+    r.forEach(([a,b])=>{if(a<pos)return;if(a>pos)f.appendChild(document.createTextNode(t.slice(pos,a)));const m=document.createElement('mark');m.className='sxm sxf';m.textContent=t.slice(a,b);f.appendChild(m);pos=b;n++});
+    if(pos<t.length)f.appendChild(document.createTextNode(t.slice(pos)));tn.parentNode.replaceChild(f,tn)});
+  clearTimeout(mark._t);mark._t=setTimeout(()=>document.querySelectorAll('mark.sxf').forEach(m=>m.classList.remove('sxf')),3100);return n}
+/* 최근 검색어 + 결과 수 */
+const rk=k=>'sx_recent_'+k;
+const rList=k=>{try{return JSON.parse(localStorage.getItem(rk(k))||'[]').filter(x=>x&&x.q)}catch(e){return[]}};
+const rSave=(k,l)=>{try{localStorage.setItem(rk(k),JSON.stringify(l.slice(0,6)))}catch(e){}};
+function rAdd(k,q,n){q=String(q||'').trim();if(q.length<2)return;const l=rList(k).filter(x=>x.q!==q&&!q.startsWith(x.q));l.unshift({q,n:n|0});rSave(k,l)}
+function rDel(k,q){rSave(k,rList(k).filter(x=>x.q!==q))}
+function rRen(k,q,nq){rSave(k,rList(k).map(x=>x.q===q?{q:nq,n:x.n}:x))}
+function pop(x,y,html,wire){document.querySelectorAll('.sxpop').forEach(p=>p.remove());const p=document.createElement('div');p.className='sxpop';p.innerHTML=html;document.body.appendChild(p);
+  p.style.left=Math.max(6,Math.min(innerWidth-p.offsetWidth-6,x-20))+'px';p.style.top=Math.max(6,y-p.offsetHeight-10)+'px';wire(p);
+  setTimeout(()=>document.addEventListener('pointerdown',function h(e){if(!p.contains(e.target)){p.remove();document.removeEventListener('pointerdown',h,true)}},true),0);return p}
+/* 칩 줄: 누르면 검색, 길게 누르면 그 자리에서 바꾸기·지우기 */
+function recentUI(el,k,onPick,max){addCss();if(!el)return;el.classList.add('sxr');const l=rList(k).slice(0,max||4);el.hidden=!l.length;
+  el.innerHTML=l.map(x=>`<button type="button" data-sxq="${String(x.q).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}">${String(x.q).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}<b>${x.n}</b></button>`).join('');
+  let lt=null,longed=false;el.onpointerdown=e=>{const b=e.target.closest('[data-sxq]');if(!b)return;longed=false;const X=e.clientX,Y=e.clientY;lt=setTimeout(()=>{longed=true;const q=b.dataset.sxq;
+    pop(X,Y,`<input value="">` +`<button data-a="r">바꾸기</button><button data-a="d">지우기</button>`,p=>{const i=p.querySelector('input');i.value=q;p.querySelector('[data-a=r]').onclick=()=>{const v=i.value.trim();if(v){rRen(k,q,v)}p.remove();recentUI(el,k,onPick,max)};p.querySelector('[data-a=d]').onclick=()=>{rDel(k,q);p.remove();recentUI(el,k,onPick,max)}})},550)};
+  el.onpointerup=el.onpointercancel=el.onpointerleave=()=>clearTimeout(lt);
+  el.onclick=e=>{const b=e.target.closest('[data-sxq]');if(!b)return;e.preventDefault();e.stopPropagation();if(longed){longed=false;return}onPick(b.dataset.sxq)};
+  el.oncontextmenu=e=>{if(e.target.closest('[data-sxq]'))e.preventDefault()}}
+/* 입력 후 잠시 멈추면 기록 */
+function track(k,getQ,getN,el,onPick){clearTimeout(track['_'+k]);track['_'+k]=setTimeout(()=>{const q=String(getQ()||'').trim();if(q.length<2)return;const n=getN();if(!n)return;rAdd(k,q,n);if(el)recentUI(el,k,onPick)},1200)}
+/* AI 뜻 검색 — sample 기능 필요 */
+let smp;async function getS(){if(smp!==undefined)return smp;try{smp=window.claude&&window.claude.use?await window.claude.use('sample'):null}catch(e){smp=null}return smp}
+async function ai(q,items,opt){opt=opt||{};const s=await getS();if(!s)throw new Error('nosample');const list=items.slice(0,opt.max||350);
+  const r=await s.json(`검색어: "${q}"\n아래 항목 중 이 검색어와 뜻·맥락이 관련된 것을 관련 높은 순으로 고르라. 글자가 같지 않아도 뜻이 비슷하거나(동의어·상위/하위 개념·영어↔한글·오타) 같은 주제면 포함. 관련 없으면 빼라. 최대 ${opt.limit||30}개.\nJSON만: {"ids":["id",...]}\n\n`+list.map(x=>`${x.id}: ${String(x.t||'').replace(/\s+/g,' ').slice(0,opt.len||90)}`).join('\n'),{modelTier:opt.tier||'quick'});
+  const ok=new Set(list.map(x=>String(x.id)));return (r&&Array.isArray(r.ids)?r.ids.map(String):[]).filter(i=>ok.has(i))}
+window.SX={nrm,jamo,isCho,score,ranges,mark,unmark,rList,rAdd,rDel,recentUI,track,ai,canAI:async()=>!!(await getS()),addCss};
+})();
+
+</script>
 <script>
 const $=s=>document.querySelector(s);
 const LS={get(k,d){try{const v=localStorage.getItem('fw_'+k);return v==null?d:JSON.parse(v)}catch(e){return d}},set(k,v){try{localStorage.setItem('fw_'+k,JSON.stringify(v))}catch(e){}}};
@@ -380,12 +458,36 @@ document.addEventListener('fullscreenchange',()=>$('#bFull').classList.toggle('o
 
 /* ---------- 검색 ---------- */
 $('#bSearch').onclick=()=>{const s=$('#searchBox');s.hidden=!s.hidden;$('#bSearch').classList.toggle('on',!s.hidden);if(!s.hidden)$('#q').focus();else{$('#q').value='';renderSearch()}};
-$('#q').oninput=renderSearch;
-function renderSearch(){const q=$('#q').value.trim().toLowerCase();const box=$('#sres');box.innerHTML='';if(!q)return;
-  const hits=all().filter(it=>JSON.stringify(it).toLowerCase().includes(q)).slice(0,12);
-  if(!hits.length){box.innerHTML='<div class="rnone">찾는 단어가 없어요</div>';return}
-  hits.forEach(it=>{const b=document.createElement('button');b.className='rcard';b.innerHTML=`<div class="t"><b>${esc(it.aWord)}</b><span class="n">${fmt(dkey(it.created))}</span></div><div class="l">${esc((it.A||[]).slice(0,4).map(x=>x.word).join(' · '))}</div>`;
-    b.onclick=()=>{openItem(it)};box.appendChild(b)})}
+/* 검색 대상: 뜻 있는 글만 (JSON 키 제외) */
+function hayOf(it){const p=it.pick||{};return [it.aWord,it.bWord,it.cWord,it.sentence,it.conclusion,it.memo,
+  ...(it.A||[]).flatMap(x=>[x.word,x.feel,x.frame]),...(it.AB||[]).flatMap(x=>[x.expr,x.note]),
+  ...(it.ABC||[]).flatMap(x=>[String(x.en||'').replace(/\*/g,''),x.ko]),p.expr,p.why].filter(Boolean).map(String)}
+function snip(t,q){if(t.length<=72)return t;const r=SX.ranges(t,q)[0];const a=r?Math.max(0,r[0]-24):0;return (a?'…':'')+t.slice(a,a+72)+(a+72<t.length?'…':'')}
+function sCard(it,q){const b=document.createElement('button');b.className='rcard';
+  const shown=[it.aWord,...(it.A||[]).slice(0,4).map(x=>x.word)].filter(Boolean).map(String);let sn='';
+  if(q&&!shown.some(t=>SX.score(q,t)>0)){const F=hayOf(it);const f=F.find(t=>SX.score(q,t)>1)||F.find(t=>SX.score(q,t)>0);if(f)sn=snip(f,q)}
+  b.innerHTML=`<div class="t"><b>${esc(it.aWord)}</b><span class="n">${fmt(dkey(it.created))}</span></div><div class="l">${esc(shown.slice(1).join(' · '))}</div>${sn?`<div class="l">${esc(sn)}</div>`:''}`;
+  b.onclick=()=>{openItem(it)};return b}
+let sxAi=null;
+const sxPick=q=>{$('#q').value=q;renderSearch()};
+$('#q').oninput=()=>{renderSearch();SX.track('haru',()=>$('#q').value,()=>renderSearch.n||0,$('#sxRecent'),sxPick)};
+SX.recentUI($('#sxRecent'),'haru',sxPick);
+function renderSearch(){const q=$('#q').value.trim();const box=$('#sres');box.innerHTML='';renderSearch.n=0;
+  if(sxAi&&sxAi.q!==q)sxAi=null;
+  if(!q){SX.mark(box,'');return}
+  const sc=all().map(it=>[it,SX.score(q,hayOf(it).join('\u0001'))]).filter(x=>x[1]>0);
+  const hits=[...sc.filter(x=>x[1]>1),...sc.filter(x=>x[1]<=1)].map(x=>x[0]);renderSearch.n=hits.length;
+  if(!hits.length)box.innerHTML='<div class="rnone">찾는 단어가 없어요</div>';
+  hits.slice(0,12).forEach(it=>box.appendChild(sCard(it,q)));
+  if(sxAi){const ids=new Set(hits.map(x=>x.id));const ex=sxAi.ids.map(byId).filter(x=>x&&!ids.has(x.id));
+    const h=document.createElement('div');h.className='rnone sxsep';h.textContent=`✨ 뜻이 비슷한 것 ${ex.length}건`;box.appendChild(h);ex.forEach(it=>box.appendChild(sCard(it,'')))}
+  SX.mark(box,q)}
+$('#sxAi').onclick=async()=>{const q=$('#q').value.trim();if(!q){toast('검색어를 넣어 주세요');$('#q').focus();return}
+  const b=$('#sxAi');b.disabled=true;b.textContent='…';
+  try{const ids=await SX.ai(q,all().map(it=>({id:it.id,t:hayOf(it).join(' · ')})),{len:160});
+    if($('#q').value.trim()===q){sxAi={q,ids};renderSearch()}}
+  catch(e){toast(e&&e.message==='nosample'?'AI 검색은 Claude 앱 안에서만 됩니다':'AI 검색 실패 — 다시 눌러 주세요')}
+  finally{b.disabled=false;b.textContent='🔍✨'}};
 
 function toast(t){const e=$('#toast');e.textContent=t;e.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>e.hidden=true,1800)}
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
